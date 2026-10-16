@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pygame
 
+from salmon_shift import SalmonShiftMixin
+
 
 LOGICAL_SIZE = (640, 400)
 VIEW_HEIGHT = 336
@@ -43,18 +45,20 @@ ROAD_NETWORK = (
 )
 
 
-class SalmonOpenWorld:
-    def __init__(self) -> None:
+class SalmonOpenWorld(SalmonShiftMixin):
+    def __init__(self, save_path: Path | None = None, legacy_path: Path | None = None) -> None:
         pygame.init()
         pygame.display.set_caption("Tide & Tackle: North Atlantic")
-        self.window = pygame.display.set_mode((1280, 800), pygame.RESIZABLE)
+        size = pygame.display.get_surface().get_size() if pygame.display.get_surface() else (1280, 800)
+        self.window = pygame.display.set_mode(size, pygame.RESIZABLE)
         self.canvas = pygame.Surface(LOGICAL_SIZE)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("consolas", 12, bold=True)
         self.small_font = pygame.font.SysFont("consolas", 10, bold=True)
         self.large_font = pygame.font.SysFont("consolas", 22, bold=True)
         self.world_width, self.world_height = WORLD_SIZE
-        self.save_path = Path(__file__).with_name("salmon_world_save.json")
+        self.save_path = save_path if save_path is not None else Path(__file__).with_name("salmon_world_save.json")
+        self.legacy_path = legacy_path if legacy_path is not None else Path(__file__).with_name("salmon_farm_save.json")
 
         self.week = 1
         self.cash = 200_008_000
@@ -116,7 +120,7 @@ class SalmonOpenWorld:
         self.collected = self._make_collectibles()
         self.camera_x = 0.0
         self.camera_y = 0.0
-        self._load_saved_or_legacy()
+        self._init_shift_ui()
 
     def _make_collectibles(self) -> list[dict[str, float | str | bool]]:
         rng = random.Random(7941)
@@ -135,9 +139,11 @@ class SalmonOpenWorld:
         return dx * dx + dy * dy < .94
 
     def _load_saved_or_legacy(self) -> None:
+        if self.mode != "career":
+            return
         source = self.save_path
         if not source.exists():
-            old_save = Path(__file__).with_name("salmon_farm_save.json")
+            old_save = self.legacy_path
             if old_save.exists():
                 source = old_save
         if not source.exists():
@@ -199,6 +205,8 @@ class SalmonOpenWorld:
         self.collected = data.get("collected", self.collected)
 
     def save(self) -> None:
+        if self.mode != "career":
+            return
         state = {
             "format": 1, "week": self.week, "cash": self.cash, "fish": self.fish,
             "feed": self.feed, "average_weight": self.average_weight, "health": self.health,
@@ -408,6 +416,7 @@ class SalmonOpenWorld:
             if key == "truck":
                 continue
             self._draw_building(key, landmark)
+        self._draw_coastal_details()
         self._draw_npcs()
         self._draw_truck()
         if not self.in_truck:
@@ -471,37 +480,93 @@ class SalmonOpenWorld:
             pygame.draw.rect(self.canvas, (190, 78, 62), (x - 6, y - 26, 12, 7))
             pygame.draw.rect(self.canvas, (239, 215, 134), (x - 4, y - 31, 8, 5))
         label = landmark["name"].upper()
+        if self.mode == "shift" and key == "market":
+            return  # The receiving platform has its own readable entrance sign.
         text = self.small_font.render(label, False, (247, 239, 200))
         tag = pygame.Rect(x - text.get_width() // 2 - 3, body.bottom + 2, text.get_width() + 6, 12)
         pygame.draw.rect(self.canvas, (44, 63, 56), tag)
         self.canvas.blit(text, (tag.x + 3, tag.y + 2))
 
     def _draw_salmon_pens(self, x: int, y: int) -> None:
-        pygame.draw.ellipse(self.canvas, (63, 93, 70), (x - 78, y - 52, 156, 108))
-        pygame.draw.rect(self.canvas, (111, 76, 52), (x - 70, y - 10, 140, 20))
-        pygame.draw.rect(self.canvas, (177, 132, 78), (x - 69, y - 6, 138, 12))
-        pygame.draw.rect(self.canvas, (213, 174, 111), (x - 68, y - 3, 136, 3))
+        if self.mode == "shift":
+            canvas = self.canvas
+            tile = pygame.Surface((206, 161), pygame.SRCALPHA)
+            self.canvas = tile
+            try:
+                self._paint_salmon_pens(103, 92)
+            finally:
+                self.canvas = canvas
+            self.canvas.blit(pygame.transform.scale(tile, (296, 232)), (x - 148, y - 133))
+        else:
+            self._paint_salmon_pens(x, y)
+
+    def _paint_salmon_pens(self, x: int, y: int) -> None:
+        t = self._art_time()
+        # A seawater basin with working perimeter decking, not four lawn ponds.
+        pygame.draw.rect(self.canvas, (56, 81, 70), (x - 97, y - 65, 194, 133))
+        pygame.draw.rect(self.canvas, (151, 109, 70), (x - 93, y - 62, 186, 124))
+        for plank_x in range(x - 90, x + 93, 9):
+            pygame.draw.line(self.canvas, (191, 151, 101), (plank_x, y - 61), (plank_x, y + 60))
+        pygame.draw.rect(self.canvas, (34, 108, 124), (x - 77, y - 46, 154, 92))
+        for row in range(8):
+            for col in range(4):
+                rx = x - 71 + col * 36 + int(math.sin(t + row) * 3)
+                ry = y - 41 + row * 11
+                pygame.draw.line(self.canvas, (48, 137, 145), (rx, ry), (rx + 12, ry), 1)
+        # Crosswalk above the water. All collision/interaction positions stay put.
+        pygame.draw.rect(self.canvas, (100, 74, 55), (x - 78, y - 5, 156, 10))
+        for px in range(x - 77, x + 78, 8):
+            pygame.draw.rect(self.canvas, (194, 151, 101), (px, y - 4, 6, 8))
+        for px, py in ((x - 90, y - 58), (x + 90, y - 58), (x - 90, y + 58), (x + 90, y + 58)):
+            pygame.draw.line(self.canvas, (212, 197, 143), (px, py), (x, y), 1)
+            pygame.draw.rect(self.canvas, (79, 64, 52), (px - 2, py - 3, 5, 7))
         centers = ((x - 36, y - 23), (x + 36, y - 23), (x - 36, y + 23), (x + 36, y + 23))
         for index, (pen_x, pen_y) in enumerate(centers):
             pond = pygame.Rect(pen_x - 28, pen_y - 18, 56, 36)
-            pygame.draw.ellipse(self.canvas, (50, 74, 63), pond.inflate(7, 7))
-            pygame.draw.ellipse(self.canvas, (225, 206, 150), pond.inflate(3, 3), 2)
-            pygame.draw.ellipse(self.canvas, (37, 132, 139), pond)
+            shake = round(math.sin(t * 34) * self.shift_hold) if self.mode == "shift" and self._task()[0] == "nets" else 0
+            pond.move_ip(shake, 0)
+            pygame.draw.ellipse(self.canvas, (25, 72, 88), pond.move(1, 4).inflate(5, 3))
+            pygame.draw.ellipse(self.canvas, (218, 203, 148), pond.inflate(4, 4), 3)
+            water_color = (40, 148, 147) if self.mode == "shift" and "Cleaned" in self.shift_care else (37, 132, 139)
+            pygame.draw.ellipse(self.canvas, water_color, pond)
             pygame.draw.ellipse(self.canvas, (72, 171, 161), pond.inflate(-8, -7), 1)
-            rng = random.Random(self.week * 101 + index * 17)
-            for _ in range(10):
-                fish_x = rng.randint(pond.left + 8, pond.right - 9)
-                fish_y = rng.randint(pond.top + 7, pond.bottom - 7)
-                pygame.draw.rect(self.canvas, (249, 164, 104), (fish_x, fish_y, 5, 2))
-                pygame.draw.rect(self.canvas, (214, 103, 75), (fish_x - 2, fish_y, 2, 2))
-            pygame.draw.line(self.canvas, (186, 224, 190), (pond.left + 7, pen_y), (pond.right - 7, pen_y), 1)
-            self._draw_text(self.canvas, f"PEN {chr(65 + index)}", (pen_x, pen_y - 4), (255, 243, 203), self.small_font, center=True)
+            for fish_index in range(6):
+                phase = t * .9 + fish_index * 1.7 + index
+                fish_x = pen_x + math.sin(phase) * 15
+                fish_y = pen_y + math.cos(phase * .7) * 8
+                facing = 1 if math.cos(phase) > 0 else -1
+                if self.mode == "shift" and (self.effect == "feed" and self.effect_seconds > 0 or self.scoop_ready or self.feed_spill):
+                    # School toward the feeding side while remaining in each net.
+                    source = self._task_target() if self.scoop_ready or self.feed_spill else self.shift_feed_point
+                    target_x, target_y = x + (source[0] - 2576) / 1.44, y + (source[1] - 1192) / 1.44
+                    fish_x = pen_x + max(-13, min(13, target_x - pen_x)) + math.sin(t * 5 + fish_index) * 5
+                    fish_y = pen_y + max(-6, min(6, target_y - pen_y)) + math.cos(t * 5 + fish_index) * 4
+                    facing = 1 if target_x >= pen_x else -1
+                    if self.scoop_ready:
+                        fish_x, fish_y = pen_x - 17 + fish_index * 6, pen_y
+                length = 9 if self.mode == "shift" and index == 3 and self.shift_juveniles else 13
+                pygame.draw.ellipse(self.canvas, (30, 113, 123), (fish_x - 6, fish_y + 2, 12, 4))
+                self._draw_fish(self.canvas, fish_x, fish_y, length, t + fish_index, facing)
+            splash = (t + index * 1.3) % 4
+            if splash < .6:
+                pygame.draw.ellipse(self.canvas, (173, 224, 206), (pen_x + 7, pen_y + 5, 5 + int(splash * 12), 3 + int(splash * 5)), 1)
+            for angle in (0, math.pi / 2, math.pi, math.pi * 1.5):
+                bx, by = pen_x + int(math.cos(angle) * 29), pen_y + int(math.sin(angle) * 19)
+                pygame.draw.circle(self.canvas, (243, 188, 91), (bx, by), 2)
+            label = f"PEN {chr(65 + index)}"
+            if self.mode == "shift" and index == 2:
+                label = "C MATURE"
+            elif self.mode == "shift" and index == 3 and self.shift_juveniles:
+                label = "D SMOLTS"
+            width = max(34, self.small_font.size(label)[0] + 4)
+            pygame.draw.rect(self.canvas, (35, 75, 77), (pen_x - width // 2, pen_y - 27, width, 10))
+            self._draw_text(self.canvas, label, (pen_x, pen_y - 23), (255, 243, 203), self.small_font, center=True)
         shed = pygame.Rect(x - 12, y + 47, 24, 12)
         pygame.draw.rect(self.canvas, (57, 62, 52), shed.inflate(3, 2))
         pygame.draw.rect(self.canvas, (218, 205, 162), shed)
         pygame.draw.rect(self.canvas, (160, 83, 64), (shed.x - 2, shed.y - 3, shed.w + 4, 4))
         sign = self.font.render("SALMON FARM  ·  NET PENS A-D", False, (255, 243, 199))
-        sign_rect = pygame.Rect(x - sign.get_width() // 2 - 7, y - 72, sign.get_width() + 14, 18)
+        sign_rect = pygame.Rect(x - sign.get_width() // 2 - 7, y - 85, sign.get_width() + 14, 18)
         pygame.draw.rect(self.canvas, (34, 65, 57), sign_rect)
         pygame.draw.rect(self.canvas, (229, 197, 132), sign_rect, 1)
         self.canvas.blit(sign, (sign_rect.x + 7, sign_rect.y + 4))
@@ -542,7 +607,9 @@ class SalmonOpenWorld:
         for shelf_y in (91, 111, 131):
             pygame.draw.rect(self.canvas, (75, 106, 97), (81, shelf_y, 76, 12))
             for egg_x in range(87, 153, 9):
-                pygame.draw.circle(self.canvas, (234, 220, 179), (egg_x, shelf_y + 5), 2)
+                if self.mode != "shift" or self.hatchery["stage"] == "eggs":
+                    pygame.draw.circle(self.canvas, (238, 162, 87), (egg_x, shelf_y + 5), 2)
+                    pygame.draw.rect(self.canvas, (255, 207, 124), (egg_x, shelf_y + 4, 1, 1))
         pygame.draw.rect(self.canvas, (69, 105, 96), (91, 161, 56, 10))
         self._draw_text(self.canvas, "INCUBATORS", (120, 176), (43, 61, 53), self.small_font, center=True)
 
@@ -552,8 +619,15 @@ class SalmonOpenWorld:
             pygame.draw.ellipse(self.canvas, (53, 83, 75), tank.inflate(4, 4))
             pygame.draw.ellipse(self.canvas, (49, 142, 146), tank)
             pygame.draw.ellipse(self.canvas, (205, 226, 189), tank, 2)
-            for fish_x in (tank_x - 8, tank_x + 2, tank_x + 10):
-                pygame.draw.rect(self.canvas, (241, 165, 109), (fish_x, tank_y, 6, 2))
+            if self.mode != "shift" or self.hatchery["stage"] in ("alevins", "fry", "smolt_ready"):
+                for fish_index in range(3):
+                    phase = self._art_time() * 1.5 + fish_index * 2
+                    meeting = self.mode == "shift" and self.effect == "nursery" and self.effect_seconds > 0
+                    fx = tank_x + (fish_index - 1) * 11 if meeting else tank_x + math.sin(phase) * 12
+                    fy = tank_y if meeting else tank_y + math.cos(phase) * 6
+                    self._draw_fish(self.canvas, fx, fy, 11, phase)
+            bubble = self._art_time() * 8 % 20
+            pygame.draw.circle(self.canvas, (177, 225, 211), (tank_x + 14, round(tank_y + 10 - bubble)), 2, 1)
         pygame.draw.rect(self.canvas, (206, 189, 139), (278, 77, 18, 8))
         self._draw_text(self.canvas, "ALEVIN / FRY NURSERY", (288, 184), (43, 61, 53), self.small_font, center=True)
 
@@ -574,12 +648,24 @@ class SalmonOpenWorld:
         pygame.draw.rect(self.canvas, (132, 101, 67), (295, 282, 50, 38))
         pygame.draw.rect(self.canvas, (218, 205, 166), (305, 282, 30, 38))
         self._draw_text(self.canvas, "GRADING FLUME", (485, 271), (43, 61, 53), self.small_font, center=True)
+        # Color-coded stations, supply pipes and sacks are visual only.
+        for color, rect in (((224, 160, 79), (73, 81, 94, 3)), ((79, 163, 164), (232, 78, 109, 3)),
+                            ((173, 115, 122), (419, 81, 151, 3)), ((94, 151, 115), (400, 219, 170, 3))):
+            pygame.draw.rect(self.canvas, color, rect)
+        pygame.draw.lines(self.canvas, (79, 118, 111), False, [(183, 86), (205, 86), (205, 144), (231, 144)], 5)
+        pygame.draw.lines(self.canvas, (144, 185, 163), False, [(183, 85), (205, 85), (205, 143), (231, 143)], 2)
+        for sack_x in (219, 237):
+            pygame.draw.rect(self.canvas, (190, 162, 104), (sack_x, 209, 14, 22), border_radius=3)
+            pygame.draw.line(self.canvas, (124, 111, 77), (sack_x + 2, 213), (sack_x + 12, 213))
+            self._draw_text(self.canvas, "F", (sack_x + 4, 219), (82, 107, 83), self.small_font)
         self._draw_text(self.canvas, "LOADING BAY / EXIT", (320, 327), (246, 233, 195), self.small_font, center=True)
 
         player_x, player_y = round(self.interior_x), round(self.interior_y)
         pygame.draw.ellipse(self.canvas, (65, 77, 58), (player_x - 6, player_y + 5, 13, 5))
         pygame.draw.rect(self.canvas, (42, 91, 79), (player_x - 6, player_y - 8, 12, 13))
         pygame.draw.rect(self.canvas, (234, 189, 145), (player_x - 3, player_y - 14, 7, 7))
+        if self.mode == "shift":
+            self._draw_work_pose(player_x, player_y)
         self._draw_text(self.canvas, "WASD WALK  ·  E WORK STATION / EXIT", (12, 8), (251, 240, 202), self.small_font)
 
     def _draw_npcs(self) -> None:
@@ -603,6 +689,8 @@ class SalmonOpenWorld:
         pygame.draw.rect(self.canvas, (104, 74, 54), (x - 4, y - 14, 8, 3))
         direction = pygame.Vector2(math.sin(self.player_facing), -math.cos(self.player_facing))
         pygame.draw.line(self.canvas, (241, 226, 177), (x, y - 3), (x + int(direction.x * 10), y - 3 + int(direction.y * 10)), 2)
+        if self.mode == "shift":
+            self._draw_work_pose(x, y)
 
     def _truck_sprite(self) -> pygame.Surface:
         sprite = pygame.Surface((22, 34), pygame.SRCALPHA)
@@ -614,19 +702,53 @@ class SalmonOpenWorld:
         pygame.draw.rect(sprite, (120, 169, 163), (7, 6, 8, 6))
         pygame.draw.rect(sprite, (244, 213, 130), (5, 2, 3, 3))
         pygame.draw.rect(sprite, (244, 213, 130), (14, 2, 3, 3))
+        if abs(self.truck_speed) > 3:
+            tread = int(self._art_time() * abs(self.truck_speed) / 12) % 5
+            for wheel_x in (1, 18):
+                pygame.draw.line(sprite, (126, 143, 132), (wheel_x, 7 + tread), (wheel_x + 2, 7 + tread))
+                pygame.draw.line(sprite, (126, 143, 132), (wheel_x, 23 + tread), (wheel_x + 2, 23 + tread))
+        if self.truck_cargo_kg > 0:
+            crate_rows = (17, 22, 27)[:self.loaded_crates] if self.mode == "shift" else (19, 25)
+            for crate_y in crate_rows:
+                pygame.draw.rect(sprite, (199, 163, 103), (6, crate_y, 10, 5))
+                pygame.draw.line(sprite, (112, 91, 68), (10, crate_y), (10, crate_y + 4))
+        if self.mode == "shift":
+            braking = pygame.K_s in self.held_keys or pygame.K_DOWN in self.held_keys
+        else:
+            braking = pygame.key.get_pressed()[pygame.K_s] or pygame.key.get_pressed()[pygame.K_DOWN]
+        for lamp_x in (5, 14):
+            pygame.draw.rect(sprite, (255, 103, 75) if braking else (140, 69, 61), (lamp_x, 30, 3, 2))
         return sprite
 
     def _draw_truck(self) -> None:
+        if self.mode == "shift" and self.shift_juveniles == 0:
+            return
         sprite = self._truck_sprite()
-        rotated = pygame.transform.rotate(sprite, -math.degrees(self.truck_heading))
+        lean = 0
+        if self.mode == "shift" and abs(self.truck_speed) > 8:
+            lean = (int(pygame.K_d in self.held_keys) - int(pygame.K_a in self.held_keys)) * min(3, abs(self.truck_speed) / 40)
+        rotated = pygame.transform.rotate(sprite, -math.degrees(self.truck_heading) + lean)
         x, y = self._world_to_screen(self.truck_x, self.truck_y)
+        if self.mode == "shift" and self.crate_bounce > 0:
+            y += round(math.sin((.6 - self.crate_bounce) / .6 * math.pi) * 3)
+        if self.mode == "shift" and self.truck_arrival > 0:
+            x += int(self.truck_arrival * 24)
+            y += int(self.truck_arrival * 12)
+        if abs(self.truck_speed) > 3:
+            direction = pygame.Vector2(math.sin(self.truck_heading), -math.cos(self.truck_heading))
+            for i in range(3):
+                age = (self._art_time() * 2 + i / 3) % 1
+                px, py = pygame.Vector2(x, y) - direction * (18 + age * 22)
+                pygame.draw.circle(self.canvas, (151, 161, 137), (round(px), round(py)), 1 + int(age * 3), 1)
         self.canvas.blit(rotated, rotated.get_rect(center=(x, y)))
         if self.truck_cargo_kg > 0:
             pygame.draw.rect(self.canvas, (242, 232, 186), (x - 8, y + 12, 16, 3))
-        if not self.in_truck and math.dist((self.player_x, self.player_y), (self.truck_x, self.truck_y)) < 140:
+        if self.mode != "shift" and not self.in_truck and math.dist((self.player_x, self.player_y), (self.truck_x, self.truck_y)) < 140:
             self._draw_text(self.canvas, "FARM TRUCK", (x, y - 23), (255, 240, 197), self.small_font, center=True)
 
     def _draw_interaction_hint(self) -> None:
+        if self.mode == "shift":
+            return
         if self.inside_hatchery:
             station = self._nearest_hatchery_station()
             if station and station[1] < 54:
@@ -862,7 +984,7 @@ class SalmonOpenWorld:
         season = ("SPRING", "SUMMER", "AUTUMN", "WINTER")[(week - 1) // 3]
         self._draw_text(self.canvas, f"WEEK {week:02d}  YEAR {year:02d}  {season}  {int(self.day_clock):02d}:00", (10, 342), (242, 220, 168))
         self._draw_text(self.canvas, f"${self.cash:,.0f}  ·  {self.fish:,} FISH  ·  {self.feed:,.0f} KG FEED", (10, 359), (241, 239, 213))
-        self._draw_text(self.canvas, f"CONTRACT: {self.contract['company']}  {self.contract['delivered']:.0f}/{self.contract['target']:.0f} KG", (10, 378), (217, 225, 191))
+        self._draw_text(self.canvas, f"CONTRACT: {self.contract['company']}  {self.contract['delivered']:.0f}/{self.contract['target']:.0f} KG", (10, 373), (217, 225, 191), self.small_font)
         if self.in_truck:
             speed = abs(self.truck_speed)
             self._draw_text(self.canvas, f"{speed * .36:.0f} KM/H  ·  {self.truck_fuel:.0f} L  ·  DAMAGE {self.truck_damage:.0f}%  ·  {self.truck_cargo_kg:.0f} KG", (330, 342), (249, 209, 135))
@@ -953,6 +1075,12 @@ class SalmonOpenWorld:
         self._draw_text(self.canvas, "TEAL PENS  ·  BLUE HATCHERY", (17, 75), (187, 220, 239), self.small_font)
 
     def _draw(self) -> None:
+        if self.mode != "career":
+            self._draw_shift_frame()
+            if self.album_open:
+                self._draw_album()
+            self._present()
+            return
         if not self.inside_hatchery:
             self.camera_x = max(0, min(self.world_width - LOGICAL_SIZE[0], (self.truck_x if self.in_truck else self.player_x) - LOGICAL_SIZE[0] / 2))
             self.camera_y = max(0, min(self.world_height - VIEW_HEIGHT, (self.truck_y if self.in_truck else self.player_y) - VIEW_HEIGHT / 2))
@@ -965,6 +1093,14 @@ class SalmonOpenWorld:
             self._draw_full_map()
         if self.show_journal:
             self._draw_journal()
+        pygame.draw.rect(self.canvas, (24, 49, 54), (0, 384, 640, 16))
+        self._draw_text(self.canvas, self._fit_music_text(self._music_status(), 443), (10, 389), font=self.small_font)
+        self._draw_text(self.canvas, "B: Album  V: " + ("unmute" if self.audio_muted else "mute"), (458, 389), font=self.small_font)
+        if self.album_open:
+            self._draw_album()
+        self._present()
+
+    def _present(self) -> None:
         window_width, window_height = self.window.get_size()
         scale = min(window_width / LOGICAL_SIZE[0], window_height / LOGICAL_SIZE[1])
         scaled = pygame.transform.scale(self.canvas, (max(1, int(640 * scale)), max(1, int(400 * scale))))
@@ -1024,6 +1160,8 @@ class SalmonOpenWorld:
         for key, landmark in LANDMARKS.items():
             lx, ly = landmark["pos"]
             w, h = landmark["size"]
+            if self.mode == "shift" and key == "pens":
+                w, h = 320, 200
             if abs(x - lx) < w * .35 and abs(y - ly) < h * .35:
                 return False
         return True
@@ -1037,7 +1175,7 @@ class SalmonOpenWorld:
         right = keys[pygame.K_d] or keys[pygame.K_RIGHT]
         throttle = float(gas) - float(brake)
         road = self._road_distance(self.truck_x, self.truck_y) < 52
-        max_speed = (245 if road else 108) * max(.45, 1 - self.truck_damage / 135)
+        max_speed = (245 if road else 108) * max(.70 if self.mode == "shift" else .45, 1 - self.truck_damage / 135)
         if throttle > 0:
             if self.truck_fuel > 0:
                 self.truck_speed = min(max_speed, self.truck_speed + 155 * dt)
@@ -1058,7 +1196,7 @@ class SalmonOpenWorld:
         steer = float(right) - float(left)
         if steer and abs(self.truck_speed) > 3:
             grip = .65 if self.weather in ("Storm", "Light rain") else 1.0
-            turn_rate = 2.8 / (1 + abs(self.truck_speed) / 100)
+            turn_rate = (3.4 if self.mode == "shift" and abs(self.truck_speed) < 90 else 2.8) / (1 + abs(self.truck_speed) / 100)
             self.truck_heading += steer * grip * turn_rate * dt * (1 if self.truck_speed >= 0 else -1)
             self.truck_heading %= math.tau
         direction = pygame.Vector2(math.sin(self.truck_heading), -math.cos(self.truck_heading))
@@ -1067,8 +1205,11 @@ class SalmonOpenWorld:
         if self._vehicle_clear(next_x, next_y):
             self.truck_x, self.truck_y = next_x, next_y
         else:
+            if self.mode == "shift" and self.bump_cooldown <= 0 and abs(self.truck_speed) > 8:
+                self.shift_bumps += 1
+                self.bump_cooldown = 1.0
             self.truck_speed *= -.18
-            self.truck_damage = min(100, self.truck_damage + 3 * dt)
+            self.truck_damage = min(100, self.truck_damage + 3 * dt * (.25 if self.mode == "shift" else 1))
             if abs(self.truck_speed) < 5:
                 self.truck_speed = 0
         if not self._on_island(self.truck_x, self.truck_y):
@@ -1084,11 +1225,15 @@ class SalmonOpenWorld:
                 continue
             lx, ly = landmark["pos"]
             w, h = landmark["size"]
+            if self.mode == "shift" and key == "pens":
+                w, h = 500, 330
             if abs(x - lx) < w * .28 and abs(y - ly) < h * .28:
                 return False
         return True
 
     def _collect_nearby(self) -> None:
+        if self.mode == "shift":
+            return
         item = self._nearest_collectible()
         if not item:
             return
@@ -1458,8 +1603,22 @@ class SalmonOpenWorld:
             self._notify("No bite yet. Keep watching the bobber.")
 
     def _update(self, dt: float) -> None:
+        self._sync_music_pause()
+        if self.video_open:
+            self._update_video(dt)
+            return
+        if self.album_open or not self.focused:
+            return
+        if self.mode != "career":
+            self._update_shift(dt)
+            return
         dt = min(dt, .05)
         keys = pygame.key.get_pressed()
+        if self.album_wait_release:
+            movement = (pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d, pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)
+            if any(keys[key] for key in movement):
+                return
+            self.album_wait_release = False
         if not self.active_panel and not self.show_map and not self.show_journal:
             if self.in_truck:
                 self._move_truck(dt, keys)
@@ -1483,6 +1642,16 @@ class SalmonOpenWorld:
         self.toast_timer = max(0, self.toast_timer - dt)
 
     def _handle_event(self, event: pygame.event.Event) -> None:
+        if event.type == pygame.QUIT:
+            self._close_video()
+        if not self._album_event(event):
+            self._handle_game_event(event)
+        self._sync_music_pause()
+
+    def _handle_game_event(self, event: pygame.event.Event) -> None:
+        if self.mode != "career":
+            self._shift_event(event)
+            return
         if event.type == pygame.QUIT:
             self.save()
             self.running = False
@@ -1529,19 +1698,21 @@ class SalmonOpenWorld:
                 self.save()
             elif key == "f9":
                 self._load_saved_or_legacy()
-                self.save_path = Path(__file__).with_name("salmon_world_save.json")
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.active_panel:
             if event.pos[1] < 40:
                 self.active_panel = None
 
     def run(self) -> None:
-        while self.running:
-            dt = self.clock.tick(60) / 1000
-            for event in pygame.event.get():
-                self._handle_event(event)
-            self._update(dt)
-            self._draw()
-        pygame.quit()
+        try:
+            while self.running:
+                dt = self.clock.tick(60) / 1000
+                for event in pygame.event.get():
+                    self._handle_event(event)
+                self._update(dt)
+                self._draw()
+        finally:
+            self._close_video()
+            pygame.quit()
 
 
 def main() -> None:
